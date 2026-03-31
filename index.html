@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ogma MTEB Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            background: #1a1a2e;
+            color: #e0e0e0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            line-height: 1.5;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { text-align: center; margin-bottom: 10px; color: #00BCD4; }
+        .stats { text-align: center; font-size: 1.1rem; margin-bottom: 30px; }
+        .timestamp { color: #888; font-size: 0.9rem; }
+        .card {
+            background: #2a2a4a;
+            border: 1px solid #3a3a5a;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .table-container { overflow-x: auto; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        th, td { padding: 12px 8px; text-align: right; border-bottom: 1px solid #3a3a5a; }
+        th { background: #1e1e3e; position: sticky; top: 0; z-index: 10; font-weight: 600; text-align: center; }
+        th:first-child, td.cat-header { position: sticky; left: 0; z-index: 5; background: #2a2a4a; text-align: left; font-weight: bold; }
+        td.cat-header { background: #1e1e3e; color: #00BCD4; }
+        .model-row.ogma { background: rgba(0,188,212,0.1); }
+        .model-row.baseline { background: rgba(255,193,7,0.1); }
+        .best { font-weight: bold; color: #00BCD4; }
+        .progress-container { background: #3a3a5a; height: 8px; border-radius: 4px; overflow: hidden; }
+        .progress { height: 100%; background: linear-gradient(to right, #00BCD4, #4dd0e1); border-radius: 4px; transition: width 0.3s; }
+        .heatmap-cell { text-align: center; font-weight: 500; min-width: 60px; }
+        .missing { color: #666; }
+        .delta-positive { background: rgba(0,255,0,0.2); color: #4caf50; }
+        .delta-negative { background: rgba(255,0,0,0.2); color: #f44336; }
+        .chart-container { height: 400px; position: relative; margin: 20px 0; }
+        @media (max-width: 768px) {
+            body { padding: 10px; }
+            table { font-size: 0.75rem; }
+            th, td { padding: 8px 4px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Ogma MTEB Dashboard</h1>
+        <div class="stats">
+            <span id="quick-stats"></span>
+            <div class="timestamp" id="timestamp"></div>
+        </div>
+
+        <div class="card">
+            <h2>Model Overview</h2>
+            <div class="table-container">
+                <table id="overview-table">
+                    <thead>
+                        <tr>
+                            <th>Model</th>
+                            <th>Params</th>
+                            <th>Dim</th>
+                            <th>Completed / 65</th>
+                            <th>Overall Avg</th>
+                            <th>Classification</th>
+                            <th>Clustering</th>
+                            <th>PairClassification</th>
+                            <th>Reranking</th>
+                            <th>Retrieval</th>
+                            <th>STS</th>
+                            <th>Summarization</th>
+                        </tr>
+                    </thead>
+                    <tbody id="overview-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Charts</h2>
+            <div class="chart-container">
+                <canvas id="overallBar"></canvas>
+            </div>
+            <div class="chart-container">
+                <canvas id="completionBar"></canvas>
+            </div>
+            <div class="chart-container">
+                <canvas id="radarChart"></canvas>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Full Heatmap</h2>
+            <div class="table-container">
+                <table id="heatmap-table">
+                    <thead id="heatmap-thead"></thead>
+                    <tbody id="heatmap-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>12L 256d vs 1024d Delta (Retrieval + All Common Tasks)</h2>
+            <div class="table-container">
+                <table id="delta-table">
+                    <thead>
+                        <tr><th>Task</th><th>256d</th><th>1024d</th><th>Delta (1024 - 256)</th></tr>
+                    </thead>
+                    <tbody id="delta-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const data = ${JSON.stringify({"models":{"tiny_2L_128_seq1024":{"label":"Ogma 2L (tiny)","params":"~2M","d_output":256,"group":"ogma"},"transformer_deep_mean_7m":{"label":"Ogma 6L (deep)","params":"7.5M","d_output":256,"group":"ogma"},"beef_9L_512_seq1024":{"label":"Ogma 9L (beef)","params":"~7M","d_output":512,"group":"ogma"},"transformer_12L_seq1024":{"label":"Ogma 12L","params":"11.2M","d_output":256,"group":"ogma"},"transformer_12L_seq1024_d1024":{"label":"Ogma 12L (d1024)","params":"11.2M","d_output":1024,"group":"ogma"},"transformer_12L_seq1024_d1024_frozen":{"label":"Ogma 12L (d1024 frozen)","params":"11.2M","d_output":1024,"group":"ogma"},"transformer_6L_wide_mean_16m":{"label":"Ogma 6L (wide)","params":"16M","d_output":256,"group":"ogma"},"transformer_8L_mean_16m":{"label":"Ogma 8L","params":"16M","d_output":256,"group":"ogma"},"transformer_14L_mean_16m":{"label":"Ogma 14L","params":"16M","d_output":256,"group":"ogma"},"potion_32m":{"label":"Potion-32M","params":"32M","d_output":256,"group":"baseline"},"potion_8m":{"label":"Potion-8M","params":"8M","d_output":256,"group":"baseline"}},"task_categories":{"Classification":["AmazonCounterfactualClassification","AmazonPolarityClassification","AmazonReviewsClassification","Banking77Classification","EmotionClassification","ImdbClassification","MTOPDomainClassification","MTOPIntentClassification","MassiveIntentClassification","MassiveScenarioClassification","ToxicConversationsClassification","TweetSentimentExtractionClassification"],"Clustering":["ArXivHierarchicalClusteringP2P","ArXivHierarchicalClusteringS2S","BiorxivClusteringP2P","BiorxivClusteringS2S","MedrxivClusteringP2P","MedrxivClusteringS2S","RedditClustering","RedditClusteringP2P","StackExchangeClustering","StackExchangeClusteringP2P","TwentyNewsgroupsClustering"],"PairClassification":["SprintDuplicateQuestions","TwitterSemEval2015","TwitterURLCorpus"],"Reranking":["AskUbuntuDupQuestions","MindSmallReranking","SciDocsRR","StackOverflowDupQuestions"],"Retrieval":["ArguAna","CQADupstackRetrieval","ClimateFEVER","DBPedia","FEVER","FiQA2018","HotpotQA","NFCorpus","NQ","QuoraRetrieval","SCIDOCS","SciFact","TRECCOVID","Touche2020"],"STS":["BIOSSES","SICK-R","STS12","STS13","STS14","STS15","STS16","STSBenchmark"],"Summarization":["SummEval"]},"scores":{"beef_9L_512_seq1024":{"RedditClusteringP2P":54.14,"CQADupstackWebmastersRetrieval":32.9,"EmotionClassification":48.29,"BiorxivClusteringS2S":27.02,"CQADupstackEnglishRetrieval":39.78,"SprintDuplicateQuestions":94.59,"STS16":83.84,"STS13":85.41,"STS14":82.62,"SCIDOCS":17.07,"CQADupstackProgrammersRetrieval":36.42,"STS12":78.29,"AmazonPolarityClassification":83.51,"CQADupstackTexRetrieval":23.29,"CQADupstackPhysicsRetrieval":38.02,"AmazonCounterfactualClassification":72.85,"TwitterURLCorpus":85.53,"STS15":86.73,"CQADupstackMathematicaRetrieval":25.36,"StackExchangeClusteringP2P":34.23,"CQADupstackAndroidRetrieval":38.98,"Touche2020":28.12,"TRECCOVID":72.99,"SICK-R":82.07,"TwentyNewsgroupsClustering":41.53,"CQADupstackStatsRetrieval":28.07,"CQADupstackWordpressRetrieval":26.42,"CQADupstackUnixRetrieval":32.78,"StackExchangeClustering":51.77,"TwitterSemEval2015":71.88,"MedrxivClusteringP2P":32.32,"MTOPIntentClassification":64.35,"SciFact":63.03,"RedditClustering":44.56,"CQADupstackGamingRetrieval":48.24,"TweetSentimentExtractionClassification":62.34,"CQADupstackGisRetrieval":33.09,"BiorxivClusteringP2P":34.84,"StackOverflowDupQuestions":45.15,"SciDocsRR":75.52,"ToxicConversationsClassification":65.79,"CQADupstackRetrieval":33.61,"AmazonReviewsClassification":39.85,"STSBenchmark":87.32,"MedrxivClusteringS2S":29.07,"NFCorpus":31.98,"QuoraRetrieval":61.89},"potion_32m":{"AmazonPolarityClassification":72.86,"MindSmallReranking":30.67,"RedditClusteringP2P":49.74,"CQADupstackWebmastersRetrieval":24.62,"ImdbClassification":70.7,"FiQA2018":18.23,"ArXivHierarchicalClusteringS2S":51.07,"EmotionClassification":48.29,"BiorxivClusteringS2S":23.44,"CQADupstackEnglishRetrieval":27.16,"SprintDuplicateQuestions":92.55,"STS16":76.85,"STS13":77.59,"STS14":72.9,"Banking77Classification":74.78,"SCIDOCS":13.64,"DBPedia":25.51,"NQ":21.16,"MTOPDomainClassification":90.61,"CQADupstackProgrammersRetrieval":23.44,"STS12":62.72,"CQADupstackTexRetrieval":13.47,"CQADupstackPhysicsRetrieval":28.11,"AmazonCounterfactualClassification":74.49,"TwitterURLCorpus":82.8,"STS15":80.76,"ArguAna":42.93,"MassiveIntentClassification":65.14,"CQADupstackMathematicaRetrieval":13.49,"StackExchangeClusteringP2P":31.27,"CQADupstackAndroidRetrieval":33.74,"Touche2020":19.89,"TRECCOVID":42.06,"SICK-R":65.67,"TwentyNewsgroupsClustering":36.77,"CQADupstackStatsRetrieval":18.53,"CQADupstackWordpressRetrieval":18.59,"CQADupstackUnixRetrieval":20.93,"StackExchangeClustering":52.21,"TwitterSemEval2015":59.15,"MedrxivClusteringP2P":28.95,"MTOPIntentClassification":59.9,"ArXivHierarchicalClusteringP2P":56.72,"SciFact":56.4,"RedditClustering":43.34,"CQADupstackGamingRetrieval":41.5,"MassiveScenarioClassification":71.39,"SummEval":29.77,"TweetSentimentExtractionClassification":56.58,"CQADupstackGisRetrieval":20.71,"BiorxivClusteringP2P":32.21,"StackOverflowDupQuestions":43.95,"FEVER":33.59,"SciDocsRR":74.83,"ToxicConversationsClassification":70.42,"ClimateFEVER":19.98,"CQADupstackRetrieval":23.69,"BIOSSES":77.56,"HotpotQA":40.21,"AmazonReviewsClassification":36.94,"STSBenchmark":76.84,"MedrxivClusteringS2S":25.93,"NFCorpus":27.07,"QuoraRetrieval":82.01,"AskUbuntuDupQuestions":54.23},"potion_8m":{"RedditClusteringP2P":47.08,"CQADupstackWebmastersRetrieval":23.74,"ImdbClassification":70.78,"FiQA2018":16.62,"ArXivHierarchicalClusteringS2S":49.33,"EmotionClassification":45.09,"BiorxivClusteringS2S":20.22,"CQADupstackEnglishRetrieval":25.73,"SprintDuplicateQuestions":90.2,"STS16":76.26,"STS13":77.28,"STS14":71.91,"Banking77Classification":72.64,"SCIDOCS":12.39,"DBPedia":24.23,"NQ":19.54,"MTOPDomainClassification":88.96,"CQADupstackProgrammersRetrieval":21.66,"STS12":62.25,"AmazonPolarityClassification":72.48,"CQADupstackTexRetrieval":13.31,"CQADupstackPhysicsRetrieval":26.67,"AmazonCounterfactualClassification":72.15,"TwitterURLCorpus":82.14,"STS15":79.75,"ArguAna":41.96,"MassiveIntentClassification":63.79,"CQADupstackMathematicaRetrieval":12.14,"StackExchangeClusteringP2P":30.76,"CQADupstackAndroidRetrieval":31.84,"Touche2020":18.62,"TRECCOVID":45.74,"SICK-R":64.68,"TwentyNewsgroupsClustering":33.54,"CQADupstackStatsRetrieval":17.25,"CQADupstackWordpressRetrieval":16.79,"CQADupstackUnixRetrieval":20.06,"StackExchangeClustering":48.19,"TwitterSemEval2015":57.52,"MedrxivClusteringP2P":27.62,"MTOPIntentClassification":57,"ArXivHierarchicalClusteringP2P":54.76,"SciFact":50.64,"RedditClustering":39.55,"CQADupstackGamingRetrieval":39.23,"MassiveScenarioClassification":70.31,"SummEval":29.26,"TweetSentimentExtractionClassification":55.39,"CQADupstackGisRetrieval":19.2,"BiorxivClusteringP2P":30.86,"StackOverflowDupQuestions":43.24,"FEVER":30.27,"SciDocsRR":72.1,"ToxicConversationsClassification":69.06,"ClimateFEVER":17.29,"CQADupstackRetrieval":22.3,"MindSmallReranking":29.43,"BIOSSES":75.86,"HotpotQA":36.22,"AmazonReviewsClassification":36.01,"STSBenchmark":75.41,"MedrxivClusteringS2S":23.81,"NFCorpus":24.27,"QuoraRetrieval":80.59,"AskUbuntuDupQuestions":54.14},"tiny_2L_128_seq1024":{"RedditClusteringP2P":46.91,"ImdbClassification":65.25,"ArXivHierarchicalClusteringS2S":50.36,"EmotionClassification":35.98,"BiorxivClusteringS2S":20.2,"CQADupstackEnglishRetrieval":19.82,"SprintDuplicateQuestions":93.48,"Banking77Classification":70.03,"MTOPDomainClassification":83.45,"CQADupstackProgrammersRetrieval":24.33,"AmazonPolarityClassification":67.63,"CQADupstackPhysicsRetrieval":28.06,"AmazonCounterfactualClassification":65.31,"TwitterURLCorpus":82.36,"ArguAna":41.94,"MassiveIntentClassification":58.75,"CQADupstackMathematicaRetrieval":14.54,"StackExchangeClusteringP2P":33.44,"CQADupstackAndroidRetrieval":26.14,"TwentyNewsgroupsClustering":31.59,"CQADupstackStatsRetrieval":21.58,"StackExchangeClustering":43.63,"TwitterSemEval2015":60.03,"MedrxivClusteringP2P":30.43,"MTOPIntentClassification":51.72,"ArXivHierarchicalClusteringP2P":55.05,"RedditClustering":37.83,"CQADupstackGamingRetrieval":35.92,"MassiveScenarioClassification":66.84,"TweetSentimentExtractionClassification":54.53,"CQADupstackGisRetrieval":21.3,"BiorxivClusteringP2P":31.05,"StackOverflowDupQuestions":41.29,"SciDocsRR":71.62,"ToxicConversationsClassification":60.13,"MindSmallReranking":30.1,"AmazonReviewsClassification":35.23,"MedrxivClusteringS2S":25.15,"AskUbuntuDupQuestions":55.94,"CQADupstackWebmastersRetrieval":23.43,"FiQA2018":17.79,"STS16":77.59,"STS13":76.93,"STS14":74.41,"SCIDOCS":11.97,"DBPedia":27.27,"NQ":29.35,"STS12":67.62,"CQADupstackTexRetrieval":15.04,"STS15":81.84,"Touche2020":23.28,"TRECCOVID":59.52,"SICK-R":69.97,"CQADupstackWordpressRetrieval":17.79,"CQADupstackUnixRetrieval":20.12,"SciFact":47.96,"SummEval":31.77,"FEVER":62.89,"ClimateFEVER":20.6,"CQADupstackRetrieval":22.34,"BIOSSES":78.85,"HotpotQA":38.75,"STSBenchmark":77.82,"NFCorpus":23.83,"QuoraRetrieval":47.12},"transformer_12L_seq1024":{"RedditClusteringP2P":54.02,"ImdbClassification":73.56,"ArXivHierarchicalClusteringS2S":52.48,"EmotionClassification":47.66,"BiorxivClusteringS2S":26.21,"SprintDuplicateQuestions":94.92,"Banking77Classification":78.57,"MTOPDomainClassification":90.33,"AmazonPolarityClassification":79.86,"AmazonCounterfactualClassification":73.24,"TwitterURLCorpus":85.5,"ArguAna":48.16,"MassiveIntentClassification":68.21,"StackExchangeClusteringP2P":34.16,"TwentyNewsgroupsClustering":41.75,"StackExchangeClustering":52.35,"TwitterSemEval2015":70.79,"MedrxivClusteringP2P":32.31,"MTOPIntentClassification":62.57,"ArXivHierarchicalClusteringP2P":56.13,"RedditClustering":44.88,"MassiveScenarioClassification":73.1,"TweetSentimentExtractionClassification":62.08,"BiorxivClusteringP2P":34.24,"StackOverflowDupQuestions":48.02,"SciDocsRR":78.34,"ToxicConversationsClassification":66.33,"MindSmallReranking":31.43,"AmazonReviewsClassification":39.49,"MedrxivClusteringS2S":28.45,"AskUbuntuDupQuestions":61.52,"CQADupstackWebmastersRetrieval":31.21,"FiQA2018":32.48,"CQADupstackEnglishRetrieval":34.78,"STS16":83.31,"STS13":85.04,"STS14":80.97,"SCIDOCS":16.37,"CQADupstackProgrammersRetrieval":33.42,"STS12":76.03,"CQADupstackTexRetrieval":21.84,"CQADupstackPhysicsRetrieval":34.39,"STS15":86.87,"CQADupstackMathematicaRetrieval":24.78,"CQADupstackAndroidRetrieval":37.46,"Touche2020":28.58,"TRECCOVID":67.01,"SICK-R":79.82,"CQADupstackStatsRetrieval":26.7,"CQADupstackWordpressRetrieval":24.06,"CQADupstackUnixRetrieval":29.63,"SciFact":59.42,"CQADupstackGamingRetrieval":44.98,"CQADupstackGisRetrieval":29.59,"CQADupstackRetrieval":31.07,"BIOSSES":84.03,"STSBenchmark":86.49,"NFCorpus":30.45,"QuoraRetrieval":60.88},"transformer_12L_seq1024_d1024":{"RedditClusteringP2P":53.85,"CQADupstackWebmastersRetrieval":30.13,"ImdbClassification":74.03,"ArXivHierarchicalClusteringS2S":52.59,"EmotionClassification":48.24,"BiorxivClusteringS2S":25.91,"CQADupstackEnglishRetrieval":34.43,"SprintDuplicateQuestions":95.05,"Banking77Classification":78.69,"MTOPDomainClassification":90.42,"CQADupstackProgrammersRetrieval":32.75,"AmazonPolarityClassification":80.44,"CQADupstackTexRetrieval":21.41,"CQADupstackPhysicsRetrieval":33.99,"AmazonCounterfactualClassification":72.89,"TwitterURLCorpus":85.5,"ArguAna":45.07,"MassiveIntentClassification":68.17,"CQADupstackMathematicaRetrieval":23.96,"StackExchangeClusteringP2P":34.06,"CQADupstackAndroidRetrieval":35.99,"TwentyNewsgroupsClustering":42.97,"CQADupstackStatsRetrieval":26.02,"CQADupstackWordpressRetrieval":23.51,"CQADupstackUnixRetrieval":29.09,"StackExchangeClustering":51.33,"TwitterSemEval2015":71.04,"MedrxivClusteringP2P":32.06,"MTOPIntentClassification":62.25,"ArXivHierarchicalClusteringP2P":55.21,"RedditClustering":44.49,"CQADupstackGamingRetrieval":44.58,"MassiveScenarioClassification":73.04,"TweetSentimentExtractionClassification":62.46,"CQADupstackGisRetrieval":29.42,"BiorxivClusteringP2P":33.97,"StackOverflowDupQuestions":43.33,"SciDocsRR":73.63,"ToxicConversationsClassification":66.27,"ClimateFEVER":27.79,"CQADupstackRetrieval":30.44,"MindSmallReranking":30.45,"AmazonReviewsClassification":39.78,"MedrxivClusteringS2S":28.37,"AskUbuntuDupQuestions":55.85},"transformer_12L_seq1024_d1024_frozen":{},"transformer_6L_wide_mean_16m":{"RedditClusteringP2P":51.74,"ImdbClassification":66.81,"ArXivHierarchicalClusteringS2S":52.13,"EmotionClassification":46.27,"BiorxivClusteringS2S":25.22,"SprintDuplicateQuestions":94.76,"Banking77Classification":77.29,"MTOPDomainClassification":89.86,"AmazonPolarityClassification":76.47,"AmazonCounterfactualClassification":71.4,"TwitterURLCorpus":84.83,"ArguAna":43.16,"MassiveIntentClassification":66.72,"StackExchangeClusteringP2P":34.1,"TwentyNewsgroupsClustering":40.64,"StackExchangeClustering":49.94,"TwitterSemEval2015":68.86,"MedrxivClusteringP2P":31.47,"MTOPIntentClassification":60.98,"ArXivHierarchicalClusteringP2P":54.53,"RedditClustering":43.86,"MassiveScenarioClassification":72.56,"TweetSentimentExtractionClassification":61.27,"BiorxivClusteringP2P":32.27,"StackOverflowDupQuestions":47.23,"SciDocsRR":77.72,"ToxicConversationsClassification":65.45,"MindSmallReranking":30.82,"AmazonReviewsClassification":39.15,"MedrxivClusteringS2S":28.75,"AskUbuntuDupQuestions":60.49},"transformer_8L_mean_16m":{"RedditClusteringP2P":50.4,"ImdbClassification":65.15,"ArXivHierarchicalClusteringS2S":52.06,"EmotionClassification":44.64,"BiorxivClusteringS2S":24.3,"SprintDuplicateQuestions":94.86,"Banking77Classification":76.3,"MTOPDomainClassification":89.04,"AmazonPolarityClassification":74.44,"AmazonCounterfactualClassification":68.49,"TwitterURLCorpus":84.43,"ArguAna":42.76,"MassiveIntentClassification":64.55,"StackExchangeClusteringP2P":33.53,"TwentyNewsgroupsClustering":38.75,"StackExchangeClustering":49.11,"TwitterSemEval2015":67.63,"MedrxivClusteringP2P":31.88,"MTOPIntentClassification":58.9,"ArXivHierarchicalClusteringP2P":53.26,"RedditClustering":42.71,"MassiveScenarioClassification":71.04,"TweetSentimentExtractionClassification":60.48,"BiorxivClusteringP2P":31.69,"StackOverflowDupQuestions":46.23,"SciDocsRR":76.33,"ToxicConversationsClassification":64.71,"MindSmallReranking":30.63,"AmazonReviewsClassification":38.52,"MedrxivClusteringS2S":28.55,"AskUbuntuDupQuestions":58.91},"transformer_14L_mean_16m":{"RedditClusteringP2P":51.72,"ImdbClassification":66.06,"ArXivHierarchicalClusteringS2S":52.58,"EmotionClassification":46.45,"BiorxivClusteringS2S":24.94,"Banking77Classification":76.91,"MTOPDomainClassification":89.92,"AmazonPolarityClassification":76.86,"AmazonCounterfactualClassification":70.23,"MassiveIntentClassification":66.72,"StackExchangeClusteringP2P":34.03,"StackExchangeClustering":49.91,"MedrxivClusteringP2P":32.07,"MTOPIntentClassification":60.89,"ArXivHierarchicalClusteringP2P":54.52,"RedditClustering":43.64,"MassiveScenarioClassification":72.49,"TweetSentimentExtractionClassification":61.48,"BiorxivClusteringP2P":32.69,"ToxicConversationsClassification":65.06,"AmazonReviewsClassification":39.31,"MedrxivClusteringS2S":28.57,"ArguAna":41.48,"SciFact":55.22,"NFCorpus":28.47},"transformer_deep_mean_7m":{"RedditClusteringP2P":50.14,"ImdbClassification":64.27,"ArXivHierarchicalClusteringS2S":52.86,"EmotionClassification":44.47,"BiorxivClusteringS2S":23.76,"SprintDuplicateQuestions":94.78,"Banking77Classification":75.18,"DBPedia":31.4,"MTOPDomainClassification":88.86,"AmazonPolarityClassification":73.63,"AmazonCounterfactualClassification":70.4,"TwitterURLCorpus":84.24,"ArguAna":41.62,"MassiveIntentClassification":63.81,"StackExchangeClusteringP2P":34.64,"CQADupstackAndroidRetrieval":40.03,"TwentyNewsgroupsClustering":37.55,"StackExchangeClustering":48.86,"TwitterSemEval2015":66.68,"MedrxivClusteringP2P":31.18,"MTOPIntentClassification":57.29,"ArXivHierarchicalClusteringP2P":53.79,"RedditClustering":42.02,"MassiveScenarioClassification":70.58,"TweetSentimentExtractionClassification":60.46,"BiorxivClusteringP2P":31.58,"StackOverflowDupQuestions":44.96,"SciDocsRR":76.07,"ToxicConversationsClassification":63.97,"MindSmallReranking":30.71,"AmazonReviewsClassification":37.93,"MedrxivClusteringS2S":27.34,"AskUbuntuDupQuestions":58.99,"FiQA2018":22.03,"STS16":81.64,"STS13":83,"STS14":78.66,"SCIDOCS":15.24,"NQ":41.36,"STS12":74.35,"STS15":85.19,"Touche2020":25.86,"TRECCOVID":63.52,"SICK-R":75.69,"SciFact":54.14,"SummEval":30.62,"FEVER":70.12,"ClimateFEVER":19.73,"BIOSSES":81.36,"HotpotQA":48.59,"STSBenchmark":84.44,"NFCorpus":27.26,"QuoraRetrieval":58.75}})};
+
+        const catOrder = ['Classification', 'Clustering', 'PairClassification', 'Reranking', 'Retrieval', 'STS', 'Summarization'];
+
+        // Build full task groups with extras under Retrieval
+        let taskCategories = data.task_categories;
+        let fullTaskGroups = catOrder.map(cat => ({cat, tasks: taskCategories[cat] || []}));
+        let allScoreTasks = new Set();
+        Object.values(data.scores).forEach(modelScores => Object.keys(modelScores || {}).forEach(t => allScoreTasks.add(t)));
+        let categoryTasks = new Set(Object.values(taskCategories).flat());
+        let extraTasks = Array.from(allScoreTasks).filter(t => !categoryTasks.has(t)).sort((a,b) => a.localeCompare(b));
+        const retrievalGroup = fullTaskGroups.find(g => g.cat === 'Retrieval');
+        if (retrievalGroup && extraTasks.length) {
+            retrievalGroup.tasks = retrievalGroup.tasks.concat(extraTasks);
+        }
+        const totalTasks = fullTaskGroups.reduce((sum, g) => sum + g.tasks.length, 0);
+
+        // Radar models
+        const radarModelIds = ['transformer_12L_seq1024', 'transformer_12L_seq1024_d1024', 'transformer_deep_mean_7m', 'potion_32m', 'potion_8m'];
+
+        function computeModelStats(modelId) {
+            const scoresObj = data.scores[modelId] || {};
+            const allScores = Object.values(scoresObj).map(s => parseFloat(s)).filter(isFinite);
+            const completed = allScores.length;
+            const overallAvg = completed > 0 ? allScores.reduce((a, b) => a + b, 0) / completed : 0;
+            const catAvgs = {};
+            fullTaskGroups.forEach(group => {
+                const catScores = group.tasks.map(t => scoresObj[t]).filter(Boolean).map(s => parseFloat(s)).filter(isFinite);
+                catAvgs[group.cat] = catScores.length > 0 ? catScores.reduce((a, b) => a + b, 0) / catScores.length : 0;
+            });
+            return { id: modelId, completed, overallAvg, catAvgs, ...data.models[modelId] };
+        }
+
+        const modelsData = Object.keys(data.models).map(computeModelStats).sort((a, b) => b.overallAvg - a.overallAvg);
+
+        // Compute bests for bolding
+        const bests = {
+            overallAvg: Math.max(...modelsData.map(m => m.overallAvg)),
+            Classification: Math.max(...modelsData.map(m => m.catAvgs.Classification)),
+            Clustering: Math.max(...modelsData.map(m => m.catAvgs.Clustering)),
+            PairClassification: Math.max(...modelsData.map(m => m.catAvgs.PairClassification)),
+            Reranking: Math.max(...modelsData.map(m => m.catAvgs.Reranking)),
+            Retrieval: Math.max(...modelsData.map(m => m.catAvgs.Retrieval)),
+            STS: Math.max(...modelsData.map(m => m.catAvgs.STS)),
+            Summarization: Math.max(...modelsData.map(m => m.catAvgs.Summarization))
+        };
+
+        function isBest(model, key) {
+            return Math.abs(model[key] - bests[key]) < 0.001;
+        }
+
+        function getCellColor(scoreStr) {
+            if (scoreStr === '--') return '#444444';
+            const score = parseFloat(scoreStr);
+            if (!isFinite(score)) return '#444444';
+            const hue = score / 100 * 120; // 0 red -> 120 green
+            return `hsl(${hue}, 80%, 40%)`;
+        }
+
+        function getGroupColor(group) {
+            return group === 'ogma' ? '#00BCD4' : '#FFC107';
+        }
+
+        // Render overview table
+        const overviewTbody = document.getElementById('overview-tbody');
+        modelsData.forEach(model => {
+            const row = document.createElement('tr');
+            row.className = `model-row ${model.group}`;
+            row.innerHTML = `
+                <td>${model.label}</td>
+                <td>${model.params}</td>
+                <td>${model.d_output}d</td>
+                <td>
+                    <div class="progress-container">
+                        <div class="progress" style="width: ${ (model.completed / totalTasks * 100) }%"></div>
+                    </div>
+                    <small>${model.completed}/${totalTasks}</small>
+                </td>
+                <td class="${isBest(model, 'overallAvg') ? 'best' : ''}">${model.overallAvg.toFixed(2)}</td>
+                <td class="${isBest(model, 'Classification') ? 'best' : ''}">${model.catAvgs.Classification.toFixed(2)}</td>
+                <td class="${isBest(model, 'Clustering') ? 'best' : ''}">${model.catAvgs.Clustering.toFixed(2)}</td>
+                <td class="${isBest(model, 'PairClassification') ? 'best' : ''}">${model.catAvgs.PairClassification.toFixed(2)}</td>
+                <td class="${isBest(model, 'Reranking') ? 'best' : ''}">${model.catAvgs.Reranking.toFixed(2)}</td>
+                <td class="${isBest(model, 'Retrieval') ? 'best' : ''}">${model.catAvgs.Retrieval.toFixed(2)}</td>
+                <td class="${isBest(model, 'STS') ? 'best' : ''}">${model.catAvgs.STS.toFixed(2)}</td>
+                <td class="${isBest(model, 'Summarization') ? 'best' : ''}">${model.catAvgs.Summarization.toFixed(2)}</td>
+            `;
+            overviewTbody.appendChild(row);
+        });
+
+        // Delta table
+        const m256 = 'transformer_12L_seq1024';
+        const m1024 = 'transformer_12L_seq1024_d1024';
+        const scores256 = data.scores[m256] || {};
+        const scores1024 = data.scores[m1024] || {};
+        const commonTasks = Object.keys(scores256).filter(t => scores1024[t]).sort((a,b) => b.localeCompare(a)); // desc sort
+        const deltaTbody = document.getElementById('delta-tbody');
+        commonTasks.forEach(task => {
+            const s256 = parseFloat(scores256[task]);
+            const s1024 = parseFloat(scores1024[task]);
+            const delta = s1024 - s256;
+            const deltaClass = delta > 0 ? 'delta-positive' : 'delta-negative';
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td style="text-align: left;">${task}</td>
+                <td>${s256.toFixed(2)}</td>
+                <td>${s1024.toFixed(2)}</td>
+                <td class="${deltaClass}">${delta.toFixed(2)}</td>
+            `;
+            deltaTbody.appendChild(row);
+        });
+
+        // Heatmap
+        const heatmapThead = document.getElementById('heatmap-thead');
+        const theadRow = document.createElement('tr');
+        theadRow.innerHTML = '<th>Task</th>';
+        modelsData.forEach(model => {
+            const th = document.createElement('th');
+            th.textContent = model.label;
+            th.title = model.id;
+            theadRow.appendChild(th);
+        });
+        heatmapThead.appendChild(theadRow);
+
+        const heatmapTbody = document.getElementById('heatmap-tbody');
+        fullTaskGroups.forEach(group => {
+            // Category header row
+            const catRow = document.createElement('tr');
+            const catTd = document.createElement('td');
+            catTd.className = 'cat-header';
+            catTd.textContent = group.cat;
+            catTd.colSpan = modelsData.length + 1;
+            catRow.appendChild(catTd);
+            heatmapTbody.appendChild(catRow);
+
+            // Task rows
+            group.tasks.forEach(task => {
+                const row = document.createElement('tr');
+                const taskTd = document.createElement('td');
+                taskTd.style.textAlign = 'left';
+                taskTd.textContent = task;
+                row.appendChild(taskTd);
+                modelsData.forEach(model => {
+                    const scoreStr = data.scores[model.id]?.[task] || '--';
+                    const td = document.createElement('td');
+                    td.className = 'heatmap-cell';
+                    if (scoreStr !== '--') {
+                        td.style.backgroundColor = getCellColor(scoreStr);
+                    } else {
+                        td.className += ' missing';
+                    }
+                    td.textContent = scoreStr;
+                    row.appendChild(td);
+                });
+                heatmapTbody.appendChild(row);
+            });
+        });
+
+        // Charts
+        document.getElementById('quick-stats').textContent = `11 models, ${totalTasks} tasks`;
+        document.getElementById('timestamp').textContent = `Last updated: ${new Date().toLocaleString()}`;
+
+        // Overall bar
+        const overallCtx = document.getElementById('overallBar').getContext('2d');
+        new Chart(overallCtx, {
+            type: 'bar',
+            data: {
+                labels: modelsData.map(m => m.label),
+                datasets: [{
+                    label: 'Overall Avg (%)',
+                    data: modelsData.map(m => m.overallAvg),
+                    backgroundColor: modelsData.map(m => getGroupColor(m.group)),
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { beginAtZero: true, max: 100 }
+                },
+                plugins: { legend: { display: false } }
+            }
+        });
+
+        // Completion horizontal bar
+        const completionCtx = document.getElementById('completionBar').getContext('2d');
+        new Chart(completionCtx, {
+            type: 'bar',
+            data: {
+                labels: modelsData.map(m => m.label),
+                datasets: [{
+                    label: 'Completion (%)',
+                    data: modelsData.map(m => (m.completed / totalTasks) * 100),
+                    backgroundColor: modelsData.map(m => getGroupColor(m.group) + '44'), // semi-transparent
+                    borderColor: modelsData.map(m => getGroupColor(m.group)),
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: { beginAtZero: true, max: 100 }
+                },
+                plugins: { legend: { display: false } }
+            }
+        });
+
+        // Radar
+        const radarCtx = document.getElementById('radarChart').getContext('2d');
+        const radarData = {
+            labels: catOrder,
+            datasets: radarModelIds.map(id => {
+                const stats = computeModelStats(id);
+                const group = data.models[id].group;
+                const color = getGroupColor(group);
+                return {
+                    label: stats.label,
+                    data: catOrder.map(c => stats.catAvgs[c]),
+                    backgroundColor: color + '22',
+                    borderColor: color,
+                    borderWidth: 2,
+                    pointBackgroundColor: color
+                };
+            })
+        };
+        new Chart(radarCtx, {
+            type: 'radar',
+            data: radarData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    r: { beginAtZero: true, max: 100, ticks: { stepSize: 20 } }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
